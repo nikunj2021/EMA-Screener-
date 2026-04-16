@@ -1,0 +1,50 @@
+name: Daily Market Analysis
+
+on:
+  schedule:
+    # Runs at 13:30 UTC every day (7:00 PM IST)
+    - cron: '30 13 * * *'
+  workflow_dispatch: # This allows you to click a "Run workflow" button manually!
+
+permissions:
+  contents: write
+
+jobs:
+  run-scripts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create Output Directories
+        run: mkdir -p Report/EMAReport
+
+      - name: Run Analysis Scripts
+        run: |
+          # The 'echo "T" |' automatically answers the [T]/[D] prompt with T (Today)
+          echo "T" | python scripts/EMA50D.py
+          echo "T" | python scripts/EMA250D.py
+          echo "T" | python scripts/EMA500D.py
+          python scripts/sectoral_ema_analysis.py
+
+      - name: Commit and Push Generated Reports
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Actions Bot"
+          
+          # Add only the generated Excel files
+          git add Report/EMAReport/*.xlsx
+          
+          # Commit only if there are changes (avoids errors if market was closed and data didn't change)
+          git commit -m "Automated Market Report Update: $(date +'%Y-%m-%d')" || exit 0
+          
+          git push
