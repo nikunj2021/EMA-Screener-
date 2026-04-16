@@ -34,10 +34,10 @@ jobs:
       - name: Run Analysis Scripts
         run: |
           # The 'echo "T" |' automatically answers the [T]/[D] prompt with T (Today)
-          echo "T" | python scripts/EMA50D.py
-          echo "T" | python scripts/EMA250D.py
-          echo "T" | python scripts/EMA500D.py
-          python scripts/sectoral_ema_analysis.py
+          echo "T" | python Scripts/EMA50D.py
+          echo "T" | python Scripts/EMA250D.py
+          echo "T" | python Scripts/EMA500D.py
+          python Scripts/sectoral_ema_analysis.py
 
       - name: Commit and Push Generated Reports
         run: |
