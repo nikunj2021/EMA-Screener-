@@ -1,1 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Daily Market Reports</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; color: #333; max-width: 800px; margin: 40px auto; padding: 20px; }
+        h1 { color: #1F4E79; text-align: center; }
+        .card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .card h2 { margin-top: 0; font-size: 1.2em; color: #4472C4; }
+        .btn { display: inline-block; margin: 5px 10px 5px 0; padding: 10px 15px; background-color: #28a745; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; }
+        .btn:hover { background-color: #218838; }
+        .btn-history { background-color: #17a2b8; }
+        .btn-history:hover { background-color: #138496; }
+        .footer { text-align: center; margin-top: 30px; font-size: 0.9em; color: #777; }
+    </style>
+</head>
+<body>
 
+    <h1>📊 Daily NSE Market Breadth</h1>
+    <p style="text-align: center;">Automatically generated every day at 7:00 PM IST.</p>
+
+    <div class="card">
+        <h2>Nifty 50 Analysis</h2>
+        <a href="Report/EMAReport/nifty_50_ema_breadth.xlsx" class="btn" download>📥 Download Today's Report</a>
+        <a href="Report/EMAReport/nifty_50_ema_breadth_history.xlsx" class="btn btn-history" download>🕒 Download History Log</a>
+    </div>
+
+    <div class="card">
+        <h2>Micro 250 Analysis</h2>
+        <a href="Report/EMAReport/Micro_250_ema_breadth.xlsx" class="btn" download>📥 Download Today's Report</a>
+        <a href="Report/EMAReport/Micro_250_ema_breadth_history.xlsx" class="btn btn-history" download>🕒 Download History Log</a>
+    </div>
+
+    <div class="card">
+        <h2>Nifty 500 Analysis</h2>
+        <a href="Report/EMAReport/nifty_500_ema_breadth.xlsx" class="btn" download>📥 Download Today's Report</a>
+        <a href="Report/EMAReport/nifty_500_ema_breadth_history.xlsx" class="btn btn-history" download>🕒 Download History Log</a>
+    </div>
+
+    <div class="card">
+        <h2>Sectoral EMA Analysis</h2>
+        <a href="Report/EMAReport/Sectoral_EMA_Analysis.xlsx" class="btn" download>📥 Download Sector Report</a>
+    </div>
+
+    <div class="footer">
+        Powered by GitHub Actions & Python
+    </div>
+
+</body>
+</html>
