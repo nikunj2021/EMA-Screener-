@@ -5,8 +5,8 @@ env:
 
 on:
   schedule:
-    # Runs at 13:37 UTC every day (7:07 PM IST)
-    - cron: '37 13 * * *'
+    # Runs at 13:30 UTC every day (7:00 PM IST)
+    - cron: '30 13 * * *'
   workflow_dispatch: # This allows you to click a "Run workflow" button manually!
 
 permissions:
