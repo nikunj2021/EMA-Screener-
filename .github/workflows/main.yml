@@ -39,15 +39,16 @@ jobs:
           echo "T" | python Scripts/EMA500D.py
           python Scripts/sectoral_ema_analysis.py
 
-      - name: Commit and Push Generated Reports
+      - name: Commit and push changes
         run: |
           git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Actions Bot"
-          
-          # Add only the generated Excel files
-          git add Report/EMAReport/*.xlsx
-          
-          # Commit only if there are changes (avoids errors if market was closed and data didn't change)
-          git commit -m "Automated Market Report Update: $(date +'%Y-%m-%d')" || exit 0
-          
-          git push
+          git config --local user.name "GitHub Action"
+          git add .
+          # The '|| echo' prevents the workflow from failing if there are no new scanned stocks to report
+          git commit -m "Automated Market Report Update: $(date +'%Y-%m-%d')" || echo "No changes to commit"
+    
+          # Pull latest changes from the remote main branch to avoid conflicts
+            git pull --rebase origin main
+    
+          # Push the merged changes
+            git push origin main
