@@ -49,9 +49,9 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add .
-          # The '|| echo' prevents the workflow from failing if there are no new scanned stocks to report
           git commit -m "Automated Market Report Update: $(date +'%Y-%m-%d')" || echo "No changes to commit"
-    
+          git pull --rebase origin main
+          git push origin main    
           # Pull latest changes from the remote main branch to avoid conflicts
             git pull --rebase origin main
     
