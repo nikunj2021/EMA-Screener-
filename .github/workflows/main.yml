@@ -33,12 +33,17 @@ jobs:
 
       - name: Run Analysis Scripts
         run: |
-          # The 'echo "T" |' automatically answers the [T]/[D] prompt with T (Today)
           echo "T" | python Scripts/EMA50D.py
           echo "T" | python Scripts/EMA250D.py
           echo "T" | python Scripts/EMA500D.py
           python Scripts/sectoral_ema_analysis.py
 
+      - name: Push to Google Sheets
+        env:
+          GSHEET_ID: ${{ secrets.GSHEET_ID }}
+          GSHEET_CREDS_JSON: ${{ secrets.GSHEET_CREDS_JSON }}
+        run: python Scripts/push_to_gsheet.py
+        
       - name: Commit and push changes
         run: |
           git config --local user.email "action@github.com"
