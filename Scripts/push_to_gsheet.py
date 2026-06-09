@@ -16,7 +16,7 @@ CREDS_JSON = os.environ["GSHEET_CREDS_JSON"]
 
 HISTORY_FILES = {
     "Nifty50_EMA":  "Report/EMAReport/nifty_50_ema_breadth_history.xlsx",
-    "Nifty250_EMA": "Report/EMAReport/micro_250_ema_breadth_history.xlsx",
+    "Nifty250_EMA": "Report/EMAReport/Micro_250_ema_breadth_history.xlsx",
     "Nifty500_EMA": "Report/EMAReport/nifty_500_ema_breadth_history.xlsx",
 }
 
