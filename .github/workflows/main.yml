@@ -42,6 +42,8 @@ jobs:
         env:
           GSHEET_ID: ${{ secrets.GSHEET_ID }}
           GSHEET_CREDS_JSON: ${{ secrets.GSHEET_CREDS_JSON }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python Scripts/push_to_gsheet.py
         
       - name: Commit and push changes
