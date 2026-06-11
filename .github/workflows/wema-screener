@@ -1,0 +1,25 @@
+# .github/workflows/ema_squeeze_weekly.yml
+name: Weekly EMA Squeeze Screener
+
+on:
+  schedule:
+    - cron: '30 4 * * 1'   # Every Monday 10:00 AM IST
+  workflow_dispatch:
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pip install yfinance openpyxl pandas numpy
+      - run: python scripts/ema_squeeze_screener.py
+      - name: Commit report
+        run: |
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git add Report/
+          git diff --staged --quiet || git commit -m "Weekly EMA Squeeze Report $(date +'%d %b %Y')"
+          git pull --rebase origin main
+          git push
