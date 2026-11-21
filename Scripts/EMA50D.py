@@ -107,10 +107,9 @@ def parse_date_arg(raw: str) -> date:
 
 
 def prompt_date() -> date | None:
-    """
-    Interactively ask the user whether they want today's data or a specific date.
-    Returns a date object (for historical) or None (for today/latest).
-    """
+    if len(sys.argv) >= 3 and sys.argv[1] == "--date":
+        return parse_date_arg(sys.argv[2])
+
     print("\n  ┌─────────────────────────────────────────────┐")
     print("  │           DATE SELECTION                    │")
     print("  ├─────────────────────────────────────────────┤")
@@ -126,8 +125,7 @@ def prompt_date() -> date | None:
             print(f"  ⚠  Warning: {d.strftime('%d-%b-%Y')} is a future date — data may not be available.")
         return d
     else:
-        return None     # means "today (IST)"
-
+        return None
 
 def resolve_fetch_window(target_date: date | None) -> tuple[str, str]:
     """
