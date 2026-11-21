@@ -182,7 +182,46 @@ def fetch_single(sym: str, start: str, end: str) -> pd.Series | None:
 
 
 def fetch_in_batches(symbols: list[str], start: str, end: str) -> dict:
-    all_closes = {}
+  if raw is None or raw.empty:
+                failed_batch.extend(batch)
+            elif len(batch) == 1:
+                sym = batch[0]
+                try:
+                    col = raw["Close"] if "Close" in raw.columns else raw.iloc[:, 0]
+                    s = col.dropna()
+                    if len(s) > 0:
+                        all_closes[sym] = s
+                    else:
+                        failed_batch.append(sym)
+                except Exception:
+                    failed_batch.append(sym)
+            # ─── REPLACE EVERYTHING FROM THIS `else:` DOWN TO `except Exception as e:` ───
+            else:
+                # Multi-level columns: (field, ticker)
+                for sym in batch:
+                    try:
+                        if isinstance(raw.columns, pd.MultiIndex):
+                            if ("Close", sym) in raw.columns:
+                                s = raw[("Close", sym)].dropna()
+                            elif sym in raw.columns.get_level_values(1):
+                                s = raw.xs(sym, axis=1, level=1)["Close"].dropna()
+                            else:
+                                failed_batch.append(sym)
+                                continue
+                        else:
+                            s = raw[sym]["Close"].dropna() if sym in raw else pd.Series()
+
+                        if len(s) > 0:
+                            all_closes[sym] = s
+                        else:
+                            failed_batch.append(sym)
+                    except Exception:
+                        failed_batch.append(sym)
+            # ─── END OF REPLACED SECTION ───────────────────────────────────────────────
+        except Exception as e:
+            print(f"    Batch error: {e}")
+            failed_batch.extend(batch) 
+  all_closes = {}
     failed_batch = []
 
     recent = [s for s in symbols if s in RECENTLY_LISTED]
