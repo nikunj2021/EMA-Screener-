@@ -99,6 +99,9 @@ def parse_date_arg(raw: str) -> date:
 
 
 def prompt_date() -> date | None:
+    if len(sys.argv) >= 3 and sys.argv[1] == "--date":
+        return parse_date_arg(sys.argv[2])
+
     print("\n  ┌─────────────────────────────────────────────┐")
     print("  │           DATE SELECTION                    │")
     print("  ├─────────────────────────────────────────────┤")
