@@ -3,6 +3,7 @@ Sectoral EMA Analysis for NSE Stocks
 Analyzes stocks trading above 20, 50, 200-day EMA by sector
 """
 
+import sys
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -13,22 +14,42 @@ from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import ColorScaleRule, DataBarRule
 import warnings
 import time
-from datetime import datetime
+from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 
 warnings.filterwarnings('ignore')
 
+# ── TIMEZONE (IST) ──────────────────────────────────────────────────────────
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def now_ist() -> datetime:
+    return datetime.now(IST)
+
+
+def today_ist() -> date:
+    return now_ist().date()
+
+
 # ── CONFIG ──────────────────────────────────────────────────────────────────
-CSV_PATH   = "StockList/SectoreStocks.csv"
+CSV_PATH    = "StockList/SectoreStocks.csv"
 OUTPUT_PATH = "Report/EMAReport/Sectoral_EMA_Analysis.xlsx"
-PERIOD     = "1y"        # fetch 1 year of daily data
+
+# Compute explicit IST date window (~465 calendar days for 200-EMA warm-up)
+TARGET_DATE = today_ist()
+END_STR     = (TARGET_DATE + timedelta(days=1)).strftime("%Y-%m-%d")
+START_STR   = (TARGET_DATE - timedelta(days=465)).strftime("%Y-%m-%d")
+
 
 # ── STYLE HELPERS ────────────────────────────────────────────────────────────
 def hdr_fill(hex_color):
     return PatternFill("solid", fgColor=hex_color)
 
+
 def thin_border():
     s = Side(style="thin", color="CCCCCC")
     return Border(left=s, right=s, top=s, bottom=s)
+
 
 def apply_header(ws, row, cols, text_list, fill_hex, font_color="FFFFFF",
                  font_size=11, bold=True):
@@ -42,6 +63,7 @@ def apply_header(ws, row, cols, text_list, fill_hex, font_color="FFFFFF",
         cell.alignment = align
         cell.border = thin_border()
 
+
 def fmt_cell(cell, number_format=None, align_h="center", bold=False,
              font_color="000000", fill_hex=None, font_size=10):
     cell.font      = Font(name="Arial", size=font_size, bold=bold, color=font_color)
@@ -51,6 +73,15 @@ def fmt_cell(cell, number_format=None, align_h="center", bold=False,
         cell.number_format = number_format
     if fill_hex:
         cell.fill = hdr_fill(fill_hex)
+
+
+def slice_to_ist_today(series: pd.Series, target_date: date) -> pd.Series:
+    if series.empty:
+        return series
+    idx_dates = [d.date() if hasattr(d, "date") else d for d in series.index]
+    mask = [d <= target_date for d in idx_dates]
+    return series[mask]
+
 
 # ── STEP 1 : Load CSV ────────────────────────────────────────────────────────
 print("Loading CSV …")
@@ -64,9 +95,10 @@ ticker_to_sector = dict(zip(df_stocks["Ticker"] + ".NS", df_stocks["Sector"]))
 all_sectors = df_stocks["Sector"].unique().tolist()
 
 print(f"  → {len(df_stocks)} stocks across {len(all_sectors)} sectors")
+print(f"  → Target Date (IST): {TARGET_DATE.strftime('%d-%b-%Y')}  |  Window: {START_STR} → {END_STR}")
 
-# ── STEP 2 : Fetch price data in batches ────────────────────────────────────
-print(f"\nDownloading price data (period={PERIOD}) …")
+# ── STEP 2 : Fetch price data ────────────────────────────────────────────────
+print("\nDownloading daily price data …")
 
 price_data = {}   # ticker → closing price Series
 failed     = []
@@ -74,12 +106,12 @@ failed     = []
 for idx, ticker in enumerate(tickers_nse, 1):
     s = None
 
-    # --- Method 1: yf.Ticker().history() — most reliable for NSE ---
+    # --- Method 1: yf.Ticker().history() with explicit IST window ---
     try:
         tk  = yf.Ticker(ticker)
-        raw = tk.history(period=PERIOD, interval="1d", auto_adjust=True)
+        raw = tk.history(start=START_STR, end=END_STR, interval="1d", auto_adjust=True)
         if raw is not None and not raw.empty and "Close" in raw.columns:
-            candidate = raw["Close"].dropna()
+            candidate = slice_to_ist_today(raw["Close"].dropna(), TARGET_DATE)
             if len(candidate) >= 20:
                 s = candidate
     except Exception:
@@ -88,17 +120,17 @@ for idx, ticker in enumerate(tickers_nse, 1):
     # --- Method 2: yf.download() fallback ---
     if s is None:
         try:
-            raw = yf.download(ticker, period=PERIOD, interval="1d",
+            raw = yf.download(ticker, start=START_STR, end=END_STR, interval="1d",
                               auto_adjust=True, progress=False, threads=False)
             if raw is not None and not raw.empty:
                 if isinstance(raw.columns, pd.MultiIndex):
                     close_col = ("Close", ticker)
                     if close_col in raw.columns:
-                        candidate = raw[close_col].dropna()
+                        candidate = slice_to_ist_today(raw[close_col].dropna(), TARGET_DATE)
                         if len(candidate) >= 20:
                             s = candidate
                 elif "Close" in raw.columns:
-                    candidate = raw["Close"].dropna()
+                    candidate = slice_to_ist_today(raw["Close"].dropna(), TARGET_DATE)
                     if len(candidate) >= 20:
                         s = candidate
         except Exception:
@@ -118,17 +150,24 @@ if failed:
     print(f"\n  ⚠  Could not fetch data for {len(failed)} ticker(s): {', '.join(t.replace('.NS','') for t in failed)}")
 print(f"\n  → Data fetched for {len(price_data)} / {len(tickers_nse)} tickers")
 
-# ── STEP 3 : Compute EMA flags ───────────────────────────────────────────────
+if not price_data:
+    print("\n  ERROR: No data fetched for any ticker. Aborting.")
+    sys.exit(1)
+
+# ── STEP 3 : Compute EMA flags & verify today's date ─────────────────────────
 def calc_ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
 
 records = []   # detailed per-ticker rows for Sheet 2
 
 for ticker, closes in price_data.items():
-    last_price = closes.iloc[-1]
-    ema20  = calc_ema(closes, 20).iloc[-1]
-    ema50  = calc_ema(closes, 50).iloc[-1] if len(closes) >= 50 else np.nan
-    ema200 = calc_ema(closes, 200).iloc[-1] if len(closes) >= 200 else np.nan
+    last_price = float(closes.iloc[-1])
+    raw_dt     = closes.index[-1]
+    bar_date   = raw_dt.date() if hasattr(raw_dt, "date") else raw_dt
+
+    ema20  = float(calc_ema(closes, 20).iloc[-1])
+    ema50  = float(calc_ema(closes, 50).iloc[-1])  if len(closes) >= 50  else np.nan
+    ema200 = float(calc_ema(closes, 200).iloc[-1]) if len(closes) >= 200 else np.nan
 
     above20  = (last_price > ema20)  if not np.isnan(ema20)  else False
     above50  = (last_price > ema50)  if not np.isnan(ema50)  else False
@@ -138,22 +177,35 @@ for ticker, closes in price_data.items():
     symbol = ticker.replace(".NS", "")
 
     records.append({
-        "Sector"  : sector,
-        "Ticker"  : symbol,
-        "Last"    : round(last_price, 2),
-        "EMA20"   : round(ema20,  2) if not np.isnan(ema20)  else None,
-        "EMA50"   : round(ema50,  2) if not np.isnan(ema50)  else None,
-        "EMA200"  : round(ema200, 2) if not np.isnan(ema200) else None,
-        "Above20" : above20,
-        "Above50" : above50,
-        "Above200": above200,
-        "Above_All": above20 and above50 and above200,
+        "Sector"    : sector,
+        "Ticker"    : symbol,
+        "Price Date": bar_date.strftime("%d-%b-%Y"),
+        "Last"      : round(last_price, 2),
+        "EMA20"     : round(ema20,  2) if not np.isnan(ema20)  else None,
+        "EMA50"     : round(ema50,  2) if not np.isnan(ema50)  else None,
+        "EMA200"    : round(ema200, 2) if not np.isnan(ema200) else None,
+        "Above20"   : above20,
+        "Above50"   : above50,
+        "Above200"  : above200,
+        "Above_All" : above20 and above50 and above200,
     })
 
 df_detail = pd.DataFrame(records)
 
+actual_report_date = df_detail["Price Date"].mode()[0]
+expected_today     = TARGET_DATE.strftime("%d-%b-%Y")
+print(f"  → Primary Closing Price Date : {actual_report_date}")
+
+if actual_report_date != expected_today:
+    print(
+        f"\n  ERROR: Expected today's data ({expected_today}), "
+        f"but latest available market bar is {actual_report_date}.\n"
+        "  Either today is an NSE holiday/weekend or Yahoo Finance "
+        "has not published today's EOD data yet. Aborting to prevent stale report."
+    )
+    sys.exit(1)
+
 # ── STEP 4 : Sector-level summary ────────────────────────────────────────────
-# Total stocks per sector (from CSV, not just those with data)
 total_map = df_stocks.groupby("Sector")["Ticker"].count().to_dict()
 
 rows_summary = []
@@ -175,8 +227,7 @@ for sector in all_sectors:
         "Pct_Above_20EMA"   : pct20,
         "Pct_Above_50EMA"   : pct50,
         "Pct_Above_200EMA"  : pct200,
-        # Composite strength = average of three percentages
-        "Strength"         : round((pct20 + pct50 + pct200) / 3, 2),
+        "Strength"          : round((pct20 + pct50 + pct200) / 3, 2),
     })
 
 df_summary = pd.DataFrame(rows_summary).sort_values("Strength", ascending=False)
@@ -185,20 +236,21 @@ df_summary = pd.DataFrame(rows_summary).sort_values("Strength", ascending=False)
 print("\nBuilding Excel report …")
 wb = Workbook()
 
-# ─── colour palette ───────────────────────────────────────────────────────────
-C_TITLE_BG   = "1F3864"   # dark navy  – title rows
-C_HDR_BG     = "2E75B6"   # mid blue   – column headers
-C_HDR_GRP    = "4472C4"   # lighter blue – group sub-headers
-C_ALT        = "EBF3FB"   # very light blue – alternating data rows
-C_SEC_BAND   = "D6E4F7"   # sector-band highlight (sheet 2)
+C_TITLE_BG   = "1F3864"
+C_HDR_BG     = "2E75B6"
+C_HDR_GRP    = "4472C4"
+C_ALT        = "EBF3FB"
+C_SEC_BAND   = "D6E4F7"
 C_WHITE      = "FFFFFF"
 C_TEXT       = "1A1A1A"
+
 
 def title_style(cell, text, span_end_col):
     cell.value     = text
     cell.font      = Font(name="Arial", size=12, bold=True, color=C_WHITE)
     cell.fill      = PatternFill("solid", fgColor=C_TITLE_BG)
     cell.alignment = Alignment(horizontal="center", vertical="center")
+
 
 def hdr_style(cell, text, bg=C_HDR_BG):
     cell.value     = text
@@ -208,6 +260,7 @@ def hdr_style(cell, text, bg=C_HDR_BG):
     cell.border    = Border(
         left=Side(style="thin", color="AAAAAA"), right=Side(style="thin", color="AAAAAA"),
         top=Side(style="thin", color="AAAAAA"),  bottom=Side(style="medium", color="555555"))
+
 
 def data_style(cell, val, fmt=None, align="center", bold=False, bg=C_WHITE):
     cell.value     = val
@@ -220,32 +273,28 @@ def data_style(cell, val, fmt=None, align="center", bold=False, bg=C_WHITE):
     if fmt:
         cell.number_format = fmt
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SHEET 1 – Sector EMA Summary
-# Cols: Sector | Total Stocks | #>20EMA | #>50EMA | #>200EMA | %>20EMA | %>50EMA | %>200EMA | Composite%
 # ═══════════════════════════════════════════════════════════════════════════════
 ws1 = wb.active
 ws1.title = "Sector EMA Summary"
 ws1.sheet_view.showGridLines = False
 
-# ── row heights ──────────────────────────────────────────────────────────────
-ws1.row_dimensions[1].height = 28   # main title
-ws1.row_dimensions[2].height = 18   # group labels
-ws1.row_dimensions[3].height = 36   # column headers
+ws1.row_dimensions[1].height = 28
+ws1.row_dimensions[2].height = 18
+ws1.row_dimensions[3].height = 36
 
-# ── column widths ─────────────────────────────────────────────────────────────
 S1_COLS = [("A", 30), ("B", 10), ("C", 12), ("D", 12), ("E", 12),
            ("F", 12),  ("G", 12), ("H", 12), ("I", 14)]
 for col, w in S1_COLS:
     ws1.column_dimensions[col].width = w
 
-# ── Row 1 : Main title ────────────────────────────────────────────────────────
 ws1.merge_cells("A1:I1")
 title_style(ws1["A1"],
-    f"NSE Sectoral EMA Analysis   ·   Generated: {datetime.now().strftime('%d-%b-%Y  %H:%M')}",
+    f"NSE Sectoral EMA Analysis   ·   Price Date: {actual_report_date}   ·   Run: {now_ist().strftime('%d-%b-%Y %H:%M IST')}",
     9)
 
-# ── Row 2 : Group labels ──────────────────────────────────────────────────────
 ws1.merge_cells("C2:E2")
 ws1.merge_cells("F2:H2")
 for cell_ref, label in [("C2", "No. of Stocks Above EMA"), ("F2", "% of Stocks Above EMA")]:
@@ -256,7 +305,6 @@ for cell_ref, label in [("C2", "No. of Stocks Above EMA"), ("F2", "% of Stocks A
     c.alignment = Alignment(horizontal="center", vertical="center")
     c.border    = Border(bottom=Side(style="thin", color="AAAAAA"))
 
-# ── Row 3 : Column headers ────────────────────────────────────────────────────
 HDR1 = ["Sector", "Total\nStocks",
         "Above\n20 EMA", "Above\n50 EMA", "Above\n200 EMA",
         "% Above\n20 EMA", "% Above\n50 EMA", "% Above\n200 EMA",
@@ -264,7 +312,6 @@ HDR1 = ["Sector", "Total\nStocks",
 for ci, h in enumerate(HDR1, 1):
     hdr_style(ws1.cell(row=3, column=ci), h)
 
-# ── Rows 4+ : Data ────────────────────────────────────────────────────────────
 for ri, row in enumerate(df_summary.itertuples(index=False), start=4):
     bg = C_ALT if ri % 2 == 0 else C_WHITE
     pct20  = row.Pct_Above_20EMA  / 100
@@ -287,7 +334,6 @@ for ri, row in enumerate(df_summary.itertuples(index=False), start=4):
         data_style(ws1.cell(row=ri, column=ci), val, fmt=fmt, align=aln, bold=bld, bg=bg)
     ws1.row_dimensions[ri].height = 17
 
-# ── Conditional colour scale on % cols F-I ───────────────────────────────────
 last_row = 3 + len(df_summary)
 for col in ["F", "G", "H", "I"]:
     ws1.conditional_formatting.add(
@@ -296,45 +342,36 @@ for col in ["F", "G", "H", "I"]:
                        mid_type="percentile",   mid_value=50, mid_color="FFEB84",
                        end_type="max",          end_color="63BE7B"))
 
-# freeze panes below header
 ws1.freeze_panes = "A4"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SHEET 2 – Ticker Detail  (stocks above 20, 50 AND 200 EMA)
-# Cols: Sector | Ticker | Close | 20EMA | 50EMA | 200EMA
-# Ordered strongest sector first, sector bands highlighted
+# SHEET 2 – Ticker Detail (stocks above 20, 50 AND 200 EMA)
 # ═══════════════════════════════════════════════════════════════════════════════
 ws2 = wb.create_sheet("Ticker Detail (Above EMA)")
 ws2.sheet_view.showGridLines = False
 
-# ── row heights ──────────────────────────────────────────────────────────────
 ws2.row_dimensions[1].height = 28
 ws2.row_dimensions[2].height = 36
 
-# ── column widths ─────────────────────────────────────────────────────────────
-S2_COLS = [("A", 30), ("B", 14), ("C", 16), ("D", 16), ("E", 16), ("F", 16), ("G", 14)]
+S2_COLS = [("A", 30), ("B", 14), ("C", 14), ("D", 16), ("E", 16), ("F", 16), ("G", 16), ("H", 14)]
 for col, w in S2_COLS:
     ws2.column_dimensions[col].width = w
 
-# ── Row 1 : Title ─────────────────────────────────────────────────────────────
-ws2.merge_cells("A1:G1")
+ws2.merge_cells("A1:H1")
 title_style(ws2["A1"],
-    "NSE Stocks Trading Above 20 / 50 / 200-Day EMA   ·   Strongest Sector First", 7)
+    f"NSE Stocks Trading Above 20 / 50 / 200-Day EMA ({actual_report_date})   ·   Strongest Sector First", 8)
 
-# ── Row 2 : Column headers ────────────────────────────────────────────────────
-HDR2 = ["Sector", "Ticker",
+HDR2 = ["Sector", "Ticker", "Price\nDate",
         "Current\nClose (\u20b9)", "20-Day\nEMA (\u20b9)", "50-Day\nEMA (\u20b9)", "200-Day\nEMA (\u20b9)",
         "TradingView\nChart"]
 for ci, h in enumerate(HDR2, 1):
     hdr_style(ws2.cell(row=2, column=ci), h)
 
-# ── Build detail rows ─────────────────────────────────────────────────────────
 sector_order = {s: i for i, s in enumerate(df_summary["Sector"].tolist())}
 df_detail_all = df_detail[df_detail["Above_All"]].copy()
 df_detail_all["sec_rank"] = df_detail_all["Sector"].map(sector_order)
 df_detail_all.sort_values(["sec_rank", "Ticker"], inplace=True)
 
-# assign alternating sector bands (toggle colour each time sector changes)
 band   = 0
 prev_s = None
 band_col = []
@@ -345,7 +382,7 @@ for s in df_detail_all["Sector"]:
     band_col.append(band)
 df_detail_all["band"] = band_col
 
-BAND_COLOURS = [C_WHITE, C_SEC_BAND]   # alternates per sector group
+BAND_COLOURS = [C_WHITE, C_SEC_BAND]
 
 ri = 3
 prev_sector = None
@@ -354,19 +391,19 @@ for _, row in df_detail_all.iterrows():
     new_sec = (row["Sector"] != prev_sector)
 
     row_data = [
-        (row["Sector"],  None,          "left",   new_sec),   # bold on first row of each sector
-        (row["Ticker"],  None,          "center", False),
-        (row["Last"],    "#,##0.00",    "right",  False),
-        (row["EMA20"],   "#,##0.00",    "right",  False),
-        (row["EMA50"],   "#,##0.00",    "right",  False),
-        (row["EMA200"],  "#,##0.00",    "right",  False),
+        (row["Sector"],     None,       "left",   new_sec),
+        (row["Ticker"],     None,       "center", False),
+        (row["Price Date"], None,       "center", False),
+        (row["Last"],       "#,##0.00", "right",  False),
+        (row["EMA20"],      "#,##0.00", "right",  False),
+        (row["EMA50"],      "#,##0.00", "right",  False),
+        (row["EMA200"],     "#,##0.00", "right",  False),
     ]
     for ci, (val, fmt, aln, bld) in enumerate(row_data, 1):
         data_style(ws2.cell(row=ri, column=ci), val, fmt=fmt, align=aln, bold=bld, bg=bg)
 
-    # TradingView hyperlink in column G
     tv_url  = f"https://www.tradingview.com/chart/?symbol=NSE:{row['Ticker']}"
-    tv_cell = ws2.cell(row=ri, column=7)
+    tv_cell = ws2.cell(row=ri, column=8)
     tv_cell.value     = f'=HYPERLINK("{tv_url}","Chart 📈")'
     tv_cell.font      = Font(name="Arial", size=10, color="0563C1", underline="single")
     tv_cell.fill      = PatternFill("solid", fgColor=bg)
