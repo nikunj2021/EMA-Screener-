@@ -2,12 +2,11 @@ name: Daily Market Analysis
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-
 on:
   schedule:
-    # Runs at 13:30 UTC every day (7:00 PM IST)
-    - cron: '0 11 * * 1-5'
-  workflow_dispatch: # This allows you to click a "Run workflow" button manually!
+    # Runs at 13:30 UTC every weekday (7:00 PM IST)
+    - cron: '30 13 * * 1-5'
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
 
 permissions:
   contents: write
@@ -45,17 +44,12 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python Scripts/push_to_gsheet.py
-        
+
       - name: Commit and push changes
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add .
-          git commit -m "Automated Market Report Update: $(date +'%Y-%m-%d')" || echo "No changes to commit"
+          git commit -m "Automated Market Report Update: $(TZ='Asia/Kolkata' date +'%Y-%m-%d')" || echo "No changes to commit"
           git pull --rebase origin main
-          git push origin main    
-          # Pull latest changes from the remote main branch to avoid conflicts
-            git pull --rebase origin main
-    
-          # Push the merged changes
-            git push origin main
+          git push origin main
