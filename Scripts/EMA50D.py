@@ -2,12 +2,6 @@
 NSE EMA Breadth Analyzer — Nifty 50
 Reads stock symbols from CSV, fetches daily closing prices & EMA data via yfinance,
 calculates % of stocks trading above 20/50/200-day EMA, and saves results to Excel.
-
-DATE SELECTION:
-  On every run the script prompts:
-    [T]  Today / latest available data (enforces today's IST trading date)
-    [D]  Specific historical date
-         Accepted formats: DD-Mon-YYYY | DD/MM/YYYY | YYYY-MM-DD
 """
 
 import sys
@@ -41,21 +35,20 @@ INPUT_CSV      = "StockList/nifty50list.csv"
 OUTPUT_EXCEL   = "Report/EMAReport/nifty_50_ema_breadth.xlsx"
 HISTORY_EXCEL  = "Report/EMAReport/nifty_50_ema_breadth_history.xlsx"
 SHEET_BREADTH  = "nifty 50_ema_breadth_history"
+INDEX_TITLE    = "NIFTY 50"
 
 # ─── SETTINGS ────────────────────────────────────────────────────────────────
 BATCH_SIZE     = 20      # stocks per yfinance batch download
 SLEEP_BETWEEN  = 1.5     # seconds between batches (avoid rate-limit)
 MIN_BARS       = 210     # minimum history bars needed for 200-EMA
 
+RECENTLY_LISTED = {
+    "EMCURE.NS",
+}
+
 
 # ─── FILE SAVE HELPER ────────────────────────────────────────────────────────
 def safe_save_xlsx(wb_or_df, path: str, is_df: bool = False) -> str:
-    """
-    Save an openpyxl Workbook (or DataFrame) to `path`.
-    If the file is locked (open in Excel), automatically saves to a timestamped
-    fallback filename in the same folder instead of crashing.
-    Returns the actual path written.
-    """
     def _write(target: str):
         if is_df:
             wb_or_df.to_excel(target, index=False)
@@ -75,22 +68,8 @@ def safe_save_xlsx(wb_or_df, path: str, is_df: bool = False) -> str:
         return fallback
 
 
-# ─── RECENTLY LISTED STOCKS (< 1 year history) ───────────────────────────────
-RECENTLY_LISTED = {
-    "EMCURE.NS",    # Listed Jul 2024
-}
-
-
 # ─── DATE PARSING ────────────────────────────────────────────────────────────
 def parse_date_arg(raw: str) -> date:
-    """
-    Parse a user-supplied date string into a date object.
-    Accepts:
-      DD-Mon-YYYY  e.g.  12-Mar-2026
-      DD-MM-YYYY   e.g.  12-03-2026
-      DD/MM/YYYY   e.g.  12/03/2026
-      YYYY-MM-DD   e.g.  2026-03-12
-    """
     for fmt in ("%d-%b-%Y", "%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d"):
         try:
             return datetime.strptime(raw.strip(), fmt).date()
@@ -127,24 +106,16 @@ def prompt_date() -> date | None:
     else:
         return None
 
-def resolve_fetch_window(target_date: date | None) -> tuple[str, str]:
-    """
-    Given the target date, decide the yfinance start/end window to download.
-    We fetch ~465 calendar days before the target so that the 200-day EMA
-    has sufficient warm-up history (~300 trading days).
 
-    Returns (start_str, end_str) in YYYY-MM-DD format.
-    yfinance end is EXCLUSIVE, so end = base_date + 1.
-    """
+def resolve_fetch_window(target_date: date | None) -> tuple[str, str]:
     base_date = target_date if target_date else today_ist()
     end_dt    = base_date + timedelta(days=1)
-    start_dt  = end_dt - timedelta(days=365 + 100)   # ~465 calendar days
+    start_dt  = end_dt - timedelta(days=365 + 100)
     return start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
 
 
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
 def load_symbols(csv_path: str) -> list[str]:
-    """Load symbols from CSV. Accepts common column names."""
     df = pd.read_csv(csv_path)
     df.columns = df.columns.str.strip()
     for col in ["Symbol", "symbol", "SYMBOL", "Ticker", "ticker", "TICKER", "NSE Symbol"]:
@@ -155,11 +126,6 @@ def load_symbols(csv_path: str) -> list[str]:
 
 
 def slice_to_date(series: pd.Series, target_date: date | None) -> pd.Series:
-    """
-    Keep only rows on or before effective_date (target_date or today_ist()).
-    Handles both timezone-aware and naive DatetimeIndex.
-    Raises ValueError if no data remains after slicing.
-    """
     if series.empty:
         return series
 
@@ -177,7 +143,6 @@ def slice_to_date(series: pd.Series, target_date: date | None) -> pd.Series:
 
 
 def fetch_single(sym: str, start: str, end: str) -> pd.Series | None:
-    """Fetch close prices for one symbol using start/end window, with fallbacks."""
     try:
         raw = yf.download(sym, start=start, end=end, interval="1d",
                           auto_adjust=True, progress=False, repair=False)
@@ -204,7 +169,6 @@ def fetch_single(sym: str, start: str, end: str) -> pd.Series | None:
 
 
 def fetch_in_batches(symbols: list[str], start: str, end: str) -> dict:
-    """Download daily OHLCV for all symbols in batches, with per-ticker retry."""
     all_closes = {}
     failed_batch = []
 
@@ -299,107 +263,9 @@ def fetch_in_batches(symbols: list[str], start: str, end: str) -> dict:
             print(f"  {still_failed}")
 
     return all_closes
-            # ─── END OF REPLACED SECTION ───────────────────────────────────────────────
-        except Exception as e:
-            print(f"    Batch error: {e}")
-            failed_batch.extend(batch)
-    """Download daily OHLCV for all symbols in batches, with per-ticker retry."""
-    all_closes = {}
-    failed_batch = []
-
-    recent = [s for s in symbols if s in RECENTLY_LISTED]
-    normal = [s for s in symbols if s not in RECENTLY_LISTED]
-    if recent:
-        print(f"\n  Pre-fetching {len(recent)} recently-listed stock(s)...")
-        for sym in recent:
-            print(f"    → {sym}", end="  ")
-            s = fetch_single(sym, start, end)
-            if s is not None:
-                all_closes[sym] = s
-                print(f"OK  ({len(s)} bars)")
-            else:
-                print("FAILED — will skip")
-        time.sleep(0.5)
-
-    total_batches = -(-len(normal) // BATCH_SIZE)
-
-    for i in range(0, len(normal), BATCH_SIZE):
-        batch = normal[i : i + BATCH_SIZE]
-        batch_num = i // BATCH_SIZE + 1
-        print(f"  Fetching batch {batch_num}/{total_batches}  ({len(batch)} symbols)...")
-        try:
-            raw = yf.download(
-                batch,
-                start=start,
-                end=end,
-                interval="1d",
-                group_by="ticker",
-                auto_adjust=True,
-                progress=False,
-                threads=True,
-                repair=False,
-            )
-            if raw is None or raw.empty:
-                failed_batch.extend(batch)
-            elif len(batch) == 1:
-                sym = batch[0]
-                try:
-                    col = raw["Close"] if "Close" in raw.columns else raw.iloc[:, 0]
-                    s = col.dropna()
-                    if len(s) > 0:
-                        all_closes[sym] = s
-                    else:
-                        failed_batch.append(sym)
-                except Exception:
-                    failed_batch.append(sym)
-            else:
-                for sym in batch:
-                    try:
-                        if isinstance(raw.columns, pd.MultiIndex):
-                            if ("Close", sym) in raw.columns:
-                                s = raw[("Close", sym)].dropna()
-                            elif sym in raw.columns.get_level_values(1):
-                                s = raw.xs(sym, axis=1, level=1)["Close"].dropna()
-                            else:
-                                failed_batch.append(sym)
-                                continue
-                        else:
-                            s = raw[sym]["Close"].dropna() if sym in raw else pd.Series()
-
-                        if len(s) > 0:
-                            all_closes[sym] = s
-                        else:
-                            failed_batch.append(sym)
-                    except Exception:
-                        failed_batch.append(sym)
-        except Exception as e:
-            print(f"    Batch error: {e}")
-            failed_batch.extend(batch)
-
-        time.sleep(SLEEP_BETWEEN)
-
-    if failed_batch:
-        print(f"\n  Retrying {len(failed_batch)} failed symbol(s) individually...")
-        still_failed = []
-        for sym in failed_batch:
-            print(f"    → {sym}", end="  ")
-            s = fetch_single(sym, start, end)
-            if s is not None:
-                all_closes[sym] = s
-                print("OK")
-            else:
-                still_failed.append(sym)
-                print("FAILED")
-            time.sleep(0.5)
-        if still_failed:
-            print(f"\n  WARNING: {len(still_failed)} symbol(s) could not be fetched and will be skipped:")
-            print(f"  {still_failed}")
-
-    return all_closes
 
 
 def compute_ema(series: pd.Series, span: int) -> float | None:
-    """Return the latest EMA value of the (already-sliced) series."""
     min_required = max(span // 2, 20)
     if len(series) < min_required:
         return None
@@ -410,12 +276,6 @@ def compute_ema(series: pd.Series, span: int) -> float | None:
 
 
 def analyse(closes_dict: dict, target_date: date | None) -> list[dict]:
-    """
-    For each symbol:
-      1. Slice the close series to target_date (or today_ist())
-      2. Use the last available closing price on or before that date
-      3. Compute EMAs on the sliced history
-    """
     results = []
     skipped = 0
 
@@ -499,7 +359,7 @@ def write_summary_sheet(wb: openpyxl.Workbook, scan_time: str, report_date_label
     ws.title = "EMA Breadth Summary"
 
     ws.merge_cells("A1:F1")
-    ws["A1"] = "NSE EMA MARKET BREADTH ANALYSIS — NIFTY 50"
+    ws["A1"] = f"NSE EMA MARKET BREADTH ANALYSIS — {INDEX_TITLE}"
     ws["A1"].font      = Font(bold=True, size=14, color="1F4E79", name="Arial")
     ws["A1"].alignment = CENTER
     ws["A1"].fill      = BLUE_FILL
@@ -651,18 +511,17 @@ _BREADTH_COLS = [
 ]
 
 _BUCKET_COLOURS = [
-    "FFC7CE",   # light red   — down 0 to -2.99%
-    "FF0000",   # red         — down -3 to -4.99%
-    "C00000",   # dark red    — down ≥ -5%
-    "D9D9D9",   # grey        — flat
-    "C6EFCE",   # light green — up 0 to 2.99%
-    "00B050",   # green       — up 3 to 4.99%
-    "375623",   # dark green  — up ≥ 5%
+    "FFC7CE",
+    "FF0000",
+    "C00000",
+    "D9D9D9",
+    "C6EFCE",
+    "00B050",
+    "375623",
 ]
 
 
 def _find_or_append_row(ws, date_label: str) -> int:
-    """Return existing row index if `date_label` is already in column 1, else next row."""
     for row_idx in range(2, ws.max_row + 1):
         if str(ws.cell(row=row_idx, column=1).value).strip() == date_label:
             return row_idx
@@ -693,7 +552,6 @@ def _compute_breadth_buckets(detail_df: pd.DataFrame) -> dict:
 
 
 def _write_or_update_ema_sheet(wb, report_date_label: str, scan_time: str, breadth: dict):
-    """Write/update one row to the EMA Breadth History sheet."""
     if SHEET_EMA_HIST in wb.sheetnames:
         ws = wb[SHEET_EMA_HIST]
     else:
@@ -722,7 +580,6 @@ def _write_or_update_ema_sheet(wb, report_date_label: str, scan_time: str, bread
 
 
 def _write_or_update_breadth_sheet(wb, report_date_label: str, detail_df: pd.DataFrame):
-    """Write/update one row to the price-change breadth history sheet."""
     buckets = _compute_breadth_buckets(detail_df)
     new_row = {_BREADTH_COLS[0]: report_date_label}
     new_row.update(buckets)
@@ -775,7 +632,6 @@ def append_history_both(history_path: str, scan_time: str, report_date_label: st
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 def main():
     scan_time = now_ist().strftime("%d-%b-%Y  %H:%M:%S IST")
-
     target_date: date | None = prompt_date()
 
     if target_date:
@@ -786,7 +642,7 @@ def main():
         mode_label        = f"Today ({report_date_label} IST)"
 
     print(f"\n{'='*65}")
-    print(f"  NSE EMA Breadth Analyser — Nifty 50")
+    print(f"  NSE EMA Breadth Analyser — {INDEX_TITLE}")
     print(f"  Scan Run  : {scan_time}")
     print(f"  Mode      : {mode_label}")
     print(f"{'='*65}")
@@ -794,17 +650,14 @@ def main():
     start_str, end_str = resolve_fetch_window(target_date)
     print(f"\n  Data window : {start_str}  →  {end_str}")
 
-    # 1. Load symbols
     print("\n[1] Loading symbols from CSV...")
     symbols = load_symbols(INPUT_CSV)
     print(f"    {len(symbols)} symbols loaded.")
 
-    # 2. Fetch data
     print("\n[2] Fetching daily closing prices from Yahoo Finance...")
     closes_dict = fetch_in_batches(symbols, start_str, end_str)
     print(f"    Data received for {len(closes_dict)} symbols.")
 
-    # 3. Analyse
     print("\n[3] Slicing to target date and computing EMAs...")
     results   = analyse(closes_dict, target_date)
     detail_df = pd.DataFrame(results)
@@ -823,7 +676,6 @@ def main():
         print(f"    Closing price dates (multiple due to holidays): {sorted(unique_dates)}")
         print(f"    Primary date used in report                  : {actual_report_date}")
 
-    # Guard: In Today [T] mode, verify today's IST trading bar was actually fetched
     if target_date is None:
         expected_today = today_ist().strftime("%d-%b-%Y")
         if actual_report_date != expected_today:
@@ -857,7 +709,6 @@ def main():
     print(f"    {'Above 50-day EMA':<30} {cnt50:>5} ({breadth['pct50']:>5.1f}%)")
     print(f"    {'Above 200-day EMA':<30} {cnt200:>5} ({breadth['pct200']:>5.1f}%)")
 
-    # 4. Write Excel
     print(f"\n[4] Writing Excel report → {OUTPUT_EXCEL}")
     wb = openpyxl.Workbook()
     write_summary_sheet(wb, scan_time, actual_report_date, breadth, detail_df)
@@ -865,7 +716,6 @@ def main():
     saved_path = safe_save_xlsx(wb, OUTPUT_EXCEL)
     print(f"    Done → {saved_path}")
 
-    # 5. Append to history
     print("\n[5] Appending to history log...")
     append_history_both(HISTORY_EXCEL, scan_time, actual_report_date, breadth, detail_df)
 
