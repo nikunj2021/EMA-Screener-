@@ -204,7 +204,43 @@ def fetch_single(sym: str, start: str, end: str) -> pd.Series | None:
 
 
 def fetch_in_batches(symbols: list[str], start: str, end: str) -> dict:
-  if raw is None or raw.empty:
+    """Download daily OHLCV for all symbols in batches, with per-ticker retry."""
+    all_closes = {}
+    failed_batch = []
+
+    recent = [s for s in symbols if s in RECENTLY_LISTED]
+    normal = [s for s in symbols if s not in RECENTLY_LISTED]
+    if recent:
+        print(f"\n  Pre-fetching {len(recent)} recently-listed stock(s)...")
+        for sym in recent:
+            print(f"    → {sym}", end="  ")
+            s = fetch_single(sym, start, end)
+            if s is not None:
+                all_closes[sym] = s
+                print(f"OK  ({len(s)} bars)")
+            else:
+                print("FAILED — will skip")
+        time.sleep(0.5)
+
+    total_batches = -(-len(normal) // BATCH_SIZE)
+
+    for i in range(0, len(normal), BATCH_SIZE):
+        batch = normal[i : i + BATCH_SIZE]
+        batch_num = i // BATCH_SIZE + 1
+        print(f"  Fetching batch {batch_num}/{total_batches}  ({len(batch)} symbols)...")
+        try:
+            raw = yf.download(
+                batch,
+                start=start,
+                end=end,
+                interval="1d",
+                group_by="ticker",
+                auto_adjust=True,
+                progress=False,
+                threads=True,
+                repair=False,
+            )
+            if raw is None or raw.empty:
                 failed_batch.extend(batch)
             elif len(batch) == 1:
                 sym = batch[0]
@@ -217,21 +253,21 @@ def fetch_in_batches(symbols: list[str], start: str, end: str) -> dict:
                         failed_batch.append(sym)
                 except Exception:
                     failed_batch.append(sym)
-            # ─── REPLACE EVERYTHING FROM THIS `else:` DOWN TO `except Exception as e:` ───
             else:
-                # Multi-level columns: (field, ticker)
                 for sym in batch:
                     try:
+                        s = pd.Series(dtype=float)
                         if isinstance(raw.columns, pd.MultiIndex):
-                            if ("Close", sym) in raw.columns:
+                            lvl0 = raw.columns.get_level_values(0)
+                            lvl1 = raw.columns.get_level_values(1)
+                            if sym in lvl0 and "Close" in raw[sym].columns:
+                                s = raw[sym]["Close"].dropna()
+                            elif ("Close", sym) in raw.columns:
                                 s = raw[("Close", sym)].dropna()
-                            elif sym in raw.columns.get_level_values(1):
+                            elif sym in lvl1:
                                 s = raw.xs(sym, axis=1, level=1)["Close"].dropna()
-                            else:
-                                failed_batch.append(sym)
-                                continue
-                        else:
-                            s = raw[sym]["Close"].dropna() if sym in raw else pd.Series()
+                        elif "Close" in raw.columns:
+                            s = raw["Close"].dropna()
 
                         if len(s) > 0:
                             all_closes[sym] = s
@@ -239,6 +275,30 @@ def fetch_in_batches(symbols: list[str], start: str, end: str) -> dict:
                             failed_batch.append(sym)
                     except Exception:
                         failed_batch.append(sym)
+        except Exception as e:
+            print(f"    Batch error: {e}")
+            failed_batch.extend(batch)
+
+        time.sleep(SLEEP_BETWEEN)
+
+    if failed_batch:
+        print(f"\n  Retrying {len(failed_batch)} failed symbol(s) individually...")
+        still_failed = []
+        for sym in failed_batch:
+            print(f"    → {sym}", end="  ")
+            s = fetch_single(sym, start, end)
+            if s is not None:
+                all_closes[sym] = s
+                print("OK")
+            else:
+                still_failed.append(sym)
+                print("FAILED")
+            time.sleep(0.5)
+        if still_failed:
+            print(f"\n  WARNING: {len(still_failed)} symbol(s) could not be fetched and will be skipped:")
+            print(f"  {still_failed}")
+
+    return all_closes
             # ─── END OF REPLACED SECTION ───────────────────────────────────────────────
         except Exception as e:
             print(f"    Batch error: {e}")
