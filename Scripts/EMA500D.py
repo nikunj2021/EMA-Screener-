@@ -1,11 +1,11 @@
 """
-NSE EMA Breadth Analyzer — Nifty 50
+NSE EMA Breadth Analyzer — Nifty 500
 Reads stock symbols from CSV, fetches daily closing prices & EMA data via yfinance,
 calculates % of stocks trading above 20/50/200-day EMA, and saves results to Excel.
 
 DATE SELECTION:
   On every run the script prompts:
-    [T]  Today / latest available data
+    [T]  Today / latest available data (enforces today's IST trading date)
     [D]  Specific historical date
          Accepted formats: DD-Mon-YYYY | DD/MM/YYYY | YYYY-MM-DD
 """
@@ -14,6 +14,7 @@ import sys
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -23,10 +24,23 @@ import os
 
 warnings.filterwarnings("ignore")
 
+# ─── TIMEZONE (IST) ──────────────────────────────────────────────────────────
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def now_ist() -> datetime:
+    return datetime.now(IST)
+
+
+def today_ist() -> date:
+    return now_ist().date()
+
+
 # ─── FILE PATHS ──────────────────────────────────────────────────────────────
 INPUT_CSV      = "StockList/nse500list.csv"
 OUTPUT_EXCEL   = "Report/EMAReport/nifty_500_ema_breadth.xlsx"
 HISTORY_EXCEL  = "Report/EMAReport/nifty_500_ema_breadth_history.xlsx"
+SHEET_BREADTH  = "nifty_500_ema_breadth_history"
 
 # ─── SETTINGS ────────────────────────────────────────────────────────────────
 BATCH_SIZE     = 20      # stocks per yfinance batch download
@@ -53,16 +67,15 @@ def safe_save_xlsx(wb_or_df, path: str, is_df: bool = False) -> str:
         return path
     except PermissionError:
         base, ext = os.path.splitext(path)
-        stamp     = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stamp     = now_ist().strftime("%Y%m%d_%H%M%S")
         fallback  = f"{base}_{stamp}{ext}"
         print(f"\n  \u26a0  '{os.path.basename(path)}' is open in Excel \u2014 cannot overwrite.")
         print(f"     Saving to: {fallback}")
         _write(fallback)
         return fallback
 
+
 # ─── RECENTLY LISTED STOCKS (< 1 year history) ───────────────────────────────
-# Stocks listed < 1 year ago have sparse data with period="1y".
-# Add newly-listed NSE stocks here in "SYMBOL.NS" format to fetch with max period.
 RECENTLY_LISTED = {
     "EMCURE.NS",    # Listed Jul 2024
 }
@@ -70,14 +83,6 @@ RECENTLY_LISTED = {
 
 # ─── DATE PARSING ────────────────────────────────────────────────────────────
 def parse_date_arg(raw: str) -> date:
-    """
-    Parse a user-supplied date string into a date object.
-    Accepts:
-      DD-Mon-YYYY  e.g.  12-Mar-2026
-      DD-MM-YYYY   e.g.  12-03-2026
-      DD/MM/YYYY   e.g.  12/03/2026
-      YYYY-MM-DD   e.g.  2026-03-12
-    """
     for fmt in ("%d-%b-%Y", "%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d"):
         try:
             return datetime.strptime(raw.strip(), fmt).date()
@@ -94,14 +99,10 @@ def parse_date_arg(raw: str) -> date:
 
 
 def prompt_date() -> date | None:
-    """
-    Interactively ask the user whether they want today's data or a specific date.
-    Returns a date object (for historical) or None (for today/latest).
-    """
     print("\n  ┌─────────────────────────────────────────────┐")
     print("  │           DATE SELECTION                    │")
     print("  ├─────────────────────────────────────────────┤")
-    print("  │  [T]  Today / latest available data         │")
+    print("  │  [T]  Today's data (IST)                    │")
     print("  │  [D]  Specific historical date              │")
     print("  └─────────────────────────────────────────────┘")
     choice = input("\n  Enter choice (T / D): ").strip().upper()
@@ -109,30 +110,22 @@ def prompt_date() -> date | None:
     if choice == "D":
         raw = input("  Enter date (DD-Mon-YYYY | DD-MM-YYYY | DD/MM/YYYY | YYYY-MM-DD): ").strip()
         d = parse_date_arg(raw)
-        if d > date.today():
+        if d > today_ist():
             print(f"  ⚠  Warning: {d.strftime('%d-%b-%Y')} is a future date — data may not be available.")
         return d
     else:
-        return None     # means "use latest"
+        return None     # means "today (IST)"
 
 
 def resolve_fetch_window(target_date: date | None) -> tuple[str, str]:
-    """
-    Given the target date, decide the yfinance start/end window to download.
-    We fetch ~465 calendar days before the target so that the 200-day EMA
-    has sufficient warm-up history (~300 trading days).
-
-    Returns (start_str, end_str) in YYYY-MM-DD format.
-    yfinance end is EXCLUSIVE, so end = target_date + 1.
-    """
-    end_dt   = (target_date if target_date else date.today()) + timedelta(days=1)
-    start_dt = end_dt - timedelta(days=365 + 100)   # ~465 calendar days
+    base_date = target_date if target_date else today_ist()
+    end_dt    = base_date + timedelta(days=1)
+    start_dt  = end_dt - timedelta(days=365 + 100)   # ~465 calendar days
     return start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
 
 
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
 def load_symbols(csv_path: str) -> list[str]:
-    """Load symbols from CSV. Accepts common column names."""
     df = pd.read_csv(csv_path)
     df.columns = df.columns.str.strip()
     for col in ["Symbol", "symbol", "SYMBOL", "Ticker", "ticker", "TICKER", "NSE Symbol"]:
@@ -143,30 +136,23 @@ def load_symbols(csv_path: str) -> list[str]:
 
 
 def slice_to_date(series: pd.Series, target_date: date | None) -> pd.Series:
-    """
-    If target_date is set, keep only rows on or before that date.
-    Handles both timezone-aware and naive DatetimeIndex.
-    Raises ValueError if no data remains after slicing.
-    """
-    if target_date is None or series.empty:
+    if series.empty:
         return series
 
-    # Convert index dates to plain date objects for comparison
+    effective_date = target_date if target_date else today_ist()
     idx_dates = [
         d.date() if hasattr(d, "date") else d
         for d in series.index
     ]
-    mask = [d <= target_date for d in idx_dates]
+    mask = [d <= effective_date for d in idx_dates]
     sliced = series[mask]
 
     if sliced.empty:
-        raise ValueError(f"No data on or before {target_date.strftime('%d-%b-%Y')}")
+        raise ValueError(f"No data on or before {effective_date.strftime('%d-%b-%Y')}")
     return sliced
 
 
 def fetch_single(sym: str, start: str, end: str) -> pd.Series | None:
-    """Fetch close prices for one symbol using start/end window, with fallbacks."""
-    # Method 1: yf.download with date range
     try:
         raw = yf.download(sym, start=start, end=end, interval="1d",
                           auto_adjust=True, progress=False, repair=False)
@@ -178,7 +164,6 @@ def fetch_single(sym: str, start: str, end: str) -> pd.Series | None:
     except Exception:
         pass
 
-    # Method 2: yf.Ticker with broader period fallback
     for p in ["2y", "max"]:
         try:
             t = yf.Ticker(sym)
@@ -194,11 +179,9 @@ def fetch_single(sym: str, start: str, end: str) -> pd.Series | None:
 
 
 def fetch_in_batches(symbols: list[str], start: str, end: str) -> dict:
-    """Download daily OHLCV for all symbols in batches, with per-ticker retry."""
     all_closes = {}
     failed_batch = []
 
-    # ── Pre-fetch recently-listed stocks individually ─────────────────────────
     recent = [s for s in symbols if s in RECENTLY_LISTED]
     normal = [s for s in symbols if s not in RECENTLY_LISTED]
     if recent:
@@ -245,7 +228,6 @@ def fetch_in_batches(symbols: list[str], start: str, end: str) -> dict:
                 except Exception:
                     failed_batch.append(sym)
             else:
-                # Multi-level columns: (field, ticker)
                 for sym in batch:
                     try:
                         if isinstance(raw.columns, pd.MultiIndex):
@@ -271,7 +253,6 @@ def fetch_in_batches(symbols: list[str], start: str, end: str) -> dict:
 
         time.sleep(SLEEP_BETWEEN)
 
-    # ── Retry failed tickers one-by-one ──────────────────────────────────────
     if failed_batch:
         print(f"\n  Retrying {len(failed_batch)} failed symbol(s) individually...")
         still_failed = []
@@ -293,27 +274,16 @@ def fetch_in_batches(symbols: list[str], start: str, end: str) -> dict:
 
 
 def compute_ema(series: pd.Series, span: int) -> float | None:
-    """
-    Return the latest EMA value of the (already-sliced) series.
-    Returns None if data is insufficient.
-    """
     min_required = max(span // 2, 20)
     if len(series) < min_required:
         return None
     val = series.ewm(span=span, adjust=False).mean().iloc[-1]
-    # Ensure scalar — newer pandas/yfinance may return a Series
     if isinstance(val, pd.Series):
         val = val.iloc[0]
     return float(val)
 
 
 def analyse(closes_dict: dict, target_date: date | None) -> list[dict]:
-    """
-    For each symbol:
-      1. Slice the close series to target_date (if specified)
-      2. Use the last available closing price on or before target_date
-      3. Compute EMAs on the sliced history
-    """
     results = []
     skipped = 0
 
@@ -324,13 +294,11 @@ def analyse(closes_dict: dict, target_date: date | None) -> list[dict]:
             skipped += 1
             continue
 
-        # Extract scalar closing price
         price = sliced.iloc[-1]
         if isinstance(price, pd.Series):
             price = price.iloc[0]
         price = float(price)
 
-        # Previous day close (second-to-last bar, if available)
         if len(sliced) >= 2:
             prev = sliced.iloc[-2]
             if isinstance(prev, pd.Series):
@@ -339,7 +307,6 @@ def analyse(closes_dict: dict, target_date: date | None) -> list[dict]:
         else:
             prev_close = None
 
-        # Record the actual date used (last trading day on/before target)
         raw_date = sliced.index[-1]
         actual_date = raw_date.date() if hasattr(raw_date, "date") else raw_date
 
@@ -395,32 +362,28 @@ def style_header_row(ws, row: int, ncols: int):
 
 
 def write_summary_sheet(wb: openpyxl.Workbook, scan_time: str, report_date_label: str,
-                         breadth: dict, detail_df: pd.DataFrame):
+                        breadth: dict, detail_df: pd.DataFrame):
     ws = wb.active
     ws.title = "EMA Breadth Summary"
 
-    # ── Title ──
     ws.merge_cells("A1:F1")
-    ws["A1"] = "NSE EMA MARKET BREADTH ANALYSIS"
+    ws["A1"] = "NSE EMA MARKET BREADTH ANALYSIS — NIFTY 500"
     ws["A1"].font      = Font(bold=True, size=14, color="1F4E79", name="Arial")
     ws["A1"].alignment = CENTER
     ws["A1"].fill      = BLUE_FILL
 
-    # ── Sub-title: scan run time + report date ──
     ws.merge_cells("A2:F2")
     ws["A2"] = f"Scan Run: {scan_time}    |    Closing Price Date: {report_date_label}"
     ws["A2"].font      = Font(italic=True, size=10, name="Arial", color="595959")
     ws["A2"].alignment = CENTER
 
-    ws.append([])  # blank row 3
+    ws.append([])
 
-    # ── Breadth Table Header ──
     headers = ["Closing Price Date", "% Above 20 EMA", "% Above 50 EMA",
                "% Above 200 EMA", "Total Stocks Analysed", "Scan Run At"]
     ws.append(headers)
     style_header_row(ws, 4, len(headers))
 
-    # ── Breadth Data Row ──
     ws.append([
         report_date_label,
         breadth["pct20"],
@@ -446,9 +409,8 @@ def write_summary_sheet(wb: openpyxl.Workbook, scan_time: str, report_date_label
                 else:
                     cell.fill = RED_FILL
 
-    ws.append([])  # blank
+    ws.append([])
 
-    # ── Market Breadth Interpretation ──
     ws.append(["Market Breadth Interpretation"])
     ws.cell(row=7, column=1).font = Font(bold=True, size=11, name="Arial", color="1F4E79")
 
@@ -475,7 +437,6 @@ def write_summary_sheet(wb: openpyxl.Workbook, scan_time: str, report_date_label
 
     ws.append([])
 
-    # ── Counts ──
     ws.append(["Counts"])
     ws.cell(row=ws.max_row, column=1).font = Font(bold=True, size=11, name="Arial", color="1F4E79")
     ws.append([f"  Above 20 EMA : {breadth['cnt20']} of {breadth['total']} stocks"])
@@ -484,7 +445,6 @@ def write_summary_sheet(wb: openpyxl.Workbook, scan_time: str, report_date_label
     for r in range(ws.max_row - 2, ws.max_row + 1):
         ws.cell(row=r, column=1).font = NORMAL
 
-    # ── Column widths ──
     ws.column_dimensions["A"].width = 22
     ws.column_dimensions["B"].width = 20
     ws.column_dimensions["C"].width = 20
@@ -503,8 +463,7 @@ def write_detail_sheet(wb: openpyxl.Workbook, detail_df: pd.DataFrame):
     ws.append(cols)
     style_header_row(ws, 1, len(cols))
 
-    TV_FONT       = Font(name="Arial", size=10, color="1155CC", underline="single")
-    TV_FONT_BOLD  = Font(name="Arial", size=10, color="1155CC", underline="single", bold=False)
+    TV_FONT = Font(name="Arial", size=10, color="1155CC", underline="single")
 
     for _, row in detail_df.iterrows():
         clean_sym = row["Symbol"].replace(".NS", "")
@@ -520,7 +479,7 @@ def write_detail_sheet(wb: openpyxl.Workbook, detail_df: pd.DataFrame):
             "YES" if row["Above EMA20"]  else "NO",
             "YES" if row["Above EMA50"]  else "NO",
             "YES" if row["Above EMA200"] else "NO",
-            clean_sym,          # display text for hyperlink cell
+            clean_sym,
         ])
         r = ws.max_row
         for c in range(1, 11):
@@ -532,7 +491,6 @@ def write_detail_sheet(wb: openpyxl.Workbook, detail_df: pd.DataFrame):
             cell = ws.cell(row=r, column=c_idx)
             cell.fill = GREEN_FILL if row[col_name] else RED_FILL
 
-        # ── TradingView hyperlink in column 10 ──
         tv_cell            = ws.cell(row=r, column=10)
         tv_cell.hyperlink  = tv_url
         tv_cell.value      = clean_sym
@@ -549,10 +507,6 @@ def write_detail_sheet(wb: openpyxl.Workbook, detail_df: pd.DataFrame):
 SHEET_EMA_HIST = "EMA Breadth History"
 _EMA_HIST_COLS = ["Date", "Scan Run At", "% >20 EMA", "% >50 EMA", "% >200 EMA", "Total Stocks"]
 
-# ─── PRICE-CHANGE BREADTH HISTORY ───────────────────────────────────────────
-SHEET_BREADTH = "nifty 50_ema_breadth_history"
-
-# Column headers for the price-change breadth sheet
 _BREADTH_COLS = [
     "Date",
     "Dn 0 to -2.99%",
@@ -564,7 +518,6 @@ _BREADTH_COLS = [
     "Up ≥5%",
 ]
 
-# Colour scheme for each bucket column (indices 1-7, 0-based within data cols)
 _BUCKET_COLOURS = [
     "FFC7CE",   # light red   — down 0 to -2.99%
     "FF0000",   # red         — down -3 to -4.99%
@@ -576,14 +529,16 @@ _BUCKET_COLOURS = [
 ]
 
 
+def _find_or_append_row(ws, date_label: str) -> int:
+    for row_idx in range(2, ws.max_row + 1):
+        if str(ws.cell(row=row_idx, column=1).value).strip() == date_label:
+            return row_idx
+    return ws.max_row + 1
+
+
 def _compute_breadth_buckets(detail_df: pd.DataFrame) -> dict:
-    """
-    Given the detail DataFrame (must contain 'Closing Price' and 'Prev Close'),
-    return bucket percentages rounded to 2 dp.
-    Stocks with no prev-close data are excluded from totals.
-    """
     valid = detail_df.dropna(subset=["Prev Close"]).copy()
-    valid = valid[valid["Prev Close"] > 0]        # guard against div/0
+    valid = valid[valid["Prev Close"] > 0]
     n = len(valid)
     if n == 0:
         return {k: 0.0 for k in _BREADTH_COLS[1:]}
@@ -594,18 +549,17 @@ def _compute_breadth_buckets(detail_df: pd.DataFrame) -> dict:
         return round(mask.sum() / n * 100, 2)
 
     return {
-        _BREADTH_COLS[1]: _pct((chg < 0)     & (chg >= -2.99)),   # -2.99% to < 0%
-        _BREADTH_COLS[2]: _pct((chg < -2.99) & (chg >= -4.99)),   # -4.99% to < -2.99%
-        _BREADTH_COLS[3]: _pct(chg <= -5.0),                       # ≤ -5%
-        _BREADTH_COLS[4]: _pct(chg == 0.0),                        # exactly 0%
-        _BREADTH_COLS[5]: _pct((chg > 0)     & (chg < 3.00)),      # > 0% to < 3%
-        _BREADTH_COLS[6]: _pct((chg >= 3.00) & (chg < 5.00)),      # 3% to < 5%
-        _BREADTH_COLS[7]: _pct(chg >= 5.0),                        # ≥ 5%
+        _BREADTH_COLS[1]: _pct((chg < 0)     & (chg >= -2.99)),
+        _BREADTH_COLS[2]: _pct((chg < -2.99) & (chg >= -4.99)),
+        _BREADTH_COLS[3]: _pct(chg <= -5.0),
+        _BREADTH_COLS[4]: _pct(chg == 0.0),
+        _BREADTH_COLS[5]: _pct((chg > 0)     & (chg < 3.00)),
+        _BREADTH_COLS[6]: _pct((chg >= 3.00) & (chg < 5.00)),
+        _BREADTH_COLS[7]: _pct(chg >= 5.0),
     }
 
 
 def _write_or_update_ema_sheet(wb, report_date_label: str, scan_time: str, breadth: dict):
-    """Write/append one row to the EMA Breadth History sheet."""
     if SHEET_EMA_HIST in wb.sheetnames:
         ws = wb[SHEET_EMA_HIST]
     else:
@@ -619,23 +573,21 @@ def _write_or_update_ema_sheet(wb, report_date_label: str, scan_time: str, bread
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = f"A1:{get_column_letter(len(_EMA_HIST_COLS))}1"
 
-    ws.append([report_date_label, scan_time,
-               breadth["pct20"], breadth["pct50"], breadth["pct200"], breadth["total"]])
-    r = ws.max_row
-    for c in range(1, len(_EMA_HIST_COLS) + 1):
-        cell = ws.cell(row=r, column=c)
+    r = _find_or_append_row(ws, report_date_label)
+    row_vals = [report_date_label, scan_time,
+                breadth["pct20"], breadth["pct50"], breadth["pct200"], breadth["total"]]
+    for c, val in enumerate(row_vals, start=1):
+        cell = ws.cell(row=r, column=c, value=val)
         cell.font      = NORMAL
         cell.border    = THIN_BORDER
         cell.alignment = CENTER
         if c in (3, 4, 5):
             cell.number_format = "0.00\"%\""
-            val = cell.value
             if val is not None:
                 cell.fill = GREEN_FILL if val >= 60 else (YELLOW_FILL if val >= 40 else RED_FILL)
 
 
 def _write_or_update_breadth_sheet(wb, report_date_label: str, detail_df: pd.DataFrame):
-    """Write/append one row to the price-change breadth history sheet."""
     buckets = _compute_breadth_buckets(detail_df)
     new_row = {_BREADTH_COLS[0]: report_date_label}
     new_row.update(buckets)
@@ -652,16 +604,14 @@ def _write_or_update_breadth_sheet(wb, report_date_label: str, detail_df: pd.Dat
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = f"A1:{get_column_letter(len(_BREADTH_COLS))}1"
 
-    data_row = [new_row[col] for col in _BREADTH_COLS]
-    ws.append(data_row)
-    r = ws.max_row
-
-    ws.cell(row=r, column=1).font      = NORMAL
-    ws.cell(row=r, column=1).border    = THIN_BORDER
-    ws.cell(row=r, column=1).alignment = CENTER
+    r = _find_or_append_row(ws, report_date_label)
+    ws.cell(row=r, column=1, value=report_date_label).font      = NORMAL
+    ws.cell(row=r, column=1).border                             = THIN_BORDER
+    ws.cell(row=r, column=1).alignment                          = CENTER
 
     for col_idx, colour in enumerate(_BUCKET_COLOURS, start=2):
-        cell = ws.cell(row=r, column=col_idx)
+        col_name = _BREADTH_COLS[col_idx - 1]
+        cell = ws.cell(row=r, column=col_idx, value=new_row[col_name])
         cell.number_format = "0.00\"%\""
         cell.border        = THIN_BORDER
         cell.alignment     = CENTER
@@ -672,10 +622,6 @@ def _write_or_update_breadth_sheet(wb, report_date_label: str, detail_df: pd.Dat
 
 def append_history_both(history_path: str, scan_time: str, report_date_label: str,
                         breadth: dict, detail_df: pd.DataFrame):
-    """
-    Load (or create) the history workbook once, write both history sheets,
-    and save once — so neither sheet ever overwrites the other.
-    """
     if os.path.exists(history_path):
         wb = openpyxl.load_workbook(history_path)
     else:
@@ -693,25 +639,23 @@ def append_history_both(history_path: str, scan_time: str, report_date_label: st
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 def main():
-    scan_time = datetime.now().strftime("%d-%b-%Y  %H:%M:%S")
+    scan_time = now_ist().strftime("%d-%b-%Y  %H:%M:%S IST")
 
-    # ── Always prompt interactively for date ─────────────────────────────────
     target_date: date | None = prompt_date()
 
     if target_date:
         report_date_label = target_date.strftime("%d-%b-%Y")
         mode_label        = f"Historical — closing price as of {report_date_label}"
     else:
-        report_date_label = "Latest (Today)"
-        mode_label        = "Today / Latest Available Closing Price"
+        report_date_label = today_ist().strftime("%d-%b-%Y")
+        mode_label        = f"Today ({report_date_label} IST)"
 
     print(f"\n{'='*65}")
-    print(f"  NSE EMA Breadth Analyser")
+    print(f"  NSE EMA Breadth Analyser — Nifty 500")
     print(f"  Scan Run  : {scan_time}")
     print(f"  Mode      : {mode_label}")
     print(f"{'='*65}")
 
-    # ── Determine fetch window ────────────────────────────────────────────────
     start_str, end_str = resolve_fetch_window(target_date)
     print(f"\n  Data window : {start_str}  →  {end_str}")
 
@@ -735,17 +679,26 @@ def main():
               "It may be a market holiday or weekend — try the nearest trading day.")
         sys.exit(1)
 
-    # Determine the actual closing date used in the report
-    # (may differ slightly across stocks due to holidays)
     unique_dates = detail_df["Price Date"].unique()
     if len(unique_dates) == 1:
         actual_report_date = unique_dates[0]
         print(f"    Closing price date : {actual_report_date}")
     else:
-        # Use the most common date
         actual_report_date = detail_df["Price Date"].mode()[0]
         print(f"    Closing price dates (multiple due to holidays): {sorted(unique_dates)}")
         print(f"    Primary date used in report                  : {actual_report_date}")
+
+    # Guard: In Today [T] mode, verify today's IST trading bar was actually fetched
+    if target_date is None:
+        expected_today = today_ist().strftime("%d-%b-%Y")
+        if actual_report_date != expected_today:
+            print(
+                f"\n  ERROR: Expected today's data ({expected_today}), "
+                f"but latest available market bar is {actual_report_date}.\n"
+                "  Either today is an NSE holiday/weekend or Yahoo Finance "
+                "has not published today's EOD data yet. Aborting to prevent stale report."
+            )
+            sys.exit(1)
 
     total  = len(detail_df)
     cnt20  = detail_df["Above EMA20"].sum()
@@ -777,7 +730,7 @@ def main():
     saved_path = safe_save_xlsx(wb, OUTPUT_EXCEL)
     print(f"    Done → {saved_path}")
 
-    # 5. Append to history (both sheets in one workbook load/save)
+    # 5. Append to history
     print("\n[5] Appending to history log...")
     append_history_both(HISTORY_EXCEL, scan_time, actual_report_date, breadth, detail_df)
 
