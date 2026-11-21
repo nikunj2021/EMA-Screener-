@@ -36,13 +36,13 @@ CSV_PATH    = "StockList/SectoreStocks.csv"
 OUTPUT_PATH = "Report/EMAReport/Sectoral_EMA_Analysis.xlsx"
 
 # Compute explicit IST date window (~465 calendar days for 200-EMA warm-up)
-TARGET_DATE = if len(sys.argv) >= 3 and sys.argv[1] == "--date":
+if len(sys.argv) >= 3 and sys.argv[1] == "--date":
     TARGET_DATE = datetime.strptime(sys.argv[2].strip(), "%Y-%m-%d").date()
 else:
     TARGET_DATE = today_ist()
-    END_STR     = (TARGET_DATE + timedelta(days=1)).strftime("%Y-%m-%d")
-START_STR   = (TARGET_DATE - timedelta(days=465)).strftime("%Y-%m-%d")
 
+END_STR     = (TARGET_DATE + timedelta(days=1)).strftime("%Y-%m-%d")
+START_STR   = (TARGET_DATE - timedelta(days=465)).strftime("%Y-%m-%d")
 
 # ── STYLE HELPERS ────────────────────────────────────────────────────────────
 def hdr_fill(hex_color):
